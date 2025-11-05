@@ -1,0 +1,16 @@
+# Core framework
+smolagents==1.22.0
+python-dotenv==1.2.1
+
+# Content retrieval
+youtube-transcript-api==1.2.3
+yt-dlp==2025.10.22
+beautifulsoup4==4.14.2
+html2text==2025.4.15
+requests==2.32.5
+
+# UI
+gradio==5.49.1
+
+# Utilities
+google-genai==1.47.0
