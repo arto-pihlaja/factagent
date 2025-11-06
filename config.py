@@ -29,7 +29,8 @@ def get_model():
 
     # Get model ID from env or use default
     # Use openrouter/ prefix to tell LiteLLM to route through OpenRouter
-    model_id = os.getenv("MODEL_ID", "openrouter/anthropic/claude-3.5-sonnet")
+    model_id = os.getenv("MODEL_ID", "mistralai/devstral-small")
+    model_id = f"openrouter/{model_id}"
 
     # Create LiteLLM model configured for OpenRouter
     model = LiteLLMModel(

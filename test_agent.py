@@ -11,7 +11,7 @@ print("=" * 70)
 # Test 1: YouTube video summary
 print("\n[Test 1] YouTube Video Summary")
 print("-" * 70)
-url = "https://www.youtube.com/watch?v=aircAruvnKk"
+url = "https://youtu.be/xz01I7I9gWc"
 print(f"URL: {url}")
 print("Enable fact-check: False")
 print("\nRunning agent...\n")

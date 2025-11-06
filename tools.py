@@ -62,8 +62,17 @@ def _get_video_metadata(video_id: str) -> dict:
         }
 
 
-def _get_video_transcript(video_id: str) -> str:
-    """Fetch video transcript using youtube-transcript-api."""
+def _get_video_transcript(video_id: str, include_timestamps: bool = True) -> str:
+    """
+    Fetch video transcript using youtube-transcript-api.
+
+    Args:
+        video_id: YouTube video ID
+        include_timestamps: If True, format as "[mm:ss], text". If False, text only.
+
+    Returns:
+        Formatted transcript string
+    """
     try:
         api = YouTubeTranscriptApi()
         transcript_list = api.list(video_id)
@@ -82,14 +91,17 @@ def _get_video_transcript(video_id: str) -> str:
         # Fetch the transcript entries
         entries = transcript.fetch()
 
-        # Format with timestamps
+        # Format with or without timestamps
         formatted_lines = []
         for entry in entries:
-            timestamp = entry.start
-            minutes = int(timestamp // 60)
-            seconds = int(timestamp % 60)
-            text = entry.text
-            formatted_lines.append(f"[{minutes:02d}:{seconds:02d}] {text}")
+            if include_timestamps:
+                timestamp = entry.start
+                minutes = int(timestamp // 60)
+                seconds = int(timestamp % 60)
+                text = entry.text
+                formatted_lines.append(f"[{minutes:02d}:{seconds:02d}], {text}")
+            else:
+                formatted_lines.append(entry.text)
 
         return '\n'.join(formatted_lines)
 
@@ -202,8 +214,8 @@ def fetch_web_page(url: str) -> str:
         text = text.strip()
 
         # Truncate if too long (keep first 10000 chars)
-        if len(text) > 10000:
-            text = text[:10000] + "\n\n[Content truncated...]"
+        if len(text) > 20000:
+            text = text[:20000] + "\n\n[Content truncated...]"
 
         return text
 
