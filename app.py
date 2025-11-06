@@ -126,18 +126,6 @@ with gr.Blocks(title="Fact-Checker") as demo:
                 visible=True
             )
 
-    # Examples
-    gr.Markdown("### Examples")
-    gr.Examples(
-        examples=[
-            ["https://www.youtube.com/watch?v=dQw4w9WgXcQ", False],
-            ["https://en.wikipedia.org/wiki/Artificial_intelligence", False],
-            ["https://en.wikipedia.org/wiki/Artificial_intelligence", True],
-        ],
-        inputs=[url_input, fact_check_checkbox],
-        label="Try these examples"
-    )
-
     # Dynamic UI: Show timestamp checkbox when download is enabled and URL is YouTube
     def update_timestamp_visibility(url, download_enabled):
         """Show timestamp checkbox only for YouTube URLs when download is enabled."""

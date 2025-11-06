@@ -1,5 +1,6 @@
 # Core framework
 smolagents==1.22.0
+smolagents[litellm]
 python-dotenv==1.2.1
 
 # Content retrieval
