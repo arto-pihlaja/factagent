@@ -3,7 +3,7 @@ Fact-Checker Agent
 Single CodeAgent with tools for summarization and fact-checking
 """
 
-from smolagents import CodeAgent, PythonInterpreterTool, FinalAnswerTool
+from smolagents import CodeAgent, PythonInterpreterTool, FinalAnswerTool, WikipediaSearchTool
 from config import get_model
 from tools import analyze_youtube_video, fetch_web_page, better_web_search
 
@@ -24,6 +24,7 @@ def create_fact_checker_agent():
         analyze_youtube_video,     # YouTube transcript extraction
         fetch_web_page,            # Web article extraction
         better_web_search,         # Web search for fact-checking
+        WikipediaSearchTool(),     # Wikipedia search for reliable reference information
         FinalAnswerTool(),         # Final answer formatting
     ]
 
