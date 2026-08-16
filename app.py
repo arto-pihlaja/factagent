@@ -1,192 +1,318 @@
 """
 Gradio UI for Fact-Checker Agent
-Simple interface for summarizing and fact-checking web content
+Step-by-step flow: Fetch → Summary → Fact-check
+Each phase appends to the results and asks user to continue.
 """
 
 import os
-import re
 import tempfile
 from datetime import datetime
 import gradio as gr
-from agent import run_fact_checker
-from tools import _extract_video_id, _get_video_transcript, fetch_web_page
+from agent import fetch_content, summarize_content, fact_check_content, is_youtube_url
 
 
-def is_youtube_url(url: str) -> bool:
-    """Check if URL is a YouTube video."""
-    return bool(re.search(r'(youtube\.com|youtu\.be)', url))
+# ---------------------------------------------------------------------------
+# Phase handlers
+# ---------------------------------------------------------------------------
 
-
-def process_url(url: str, enable_fact_check: bool, enable_download: bool, include_timestamps: bool):
+def phase_fetch(url: str, state: dict):
     """
-    Process URL through fact-checker agent.
-
-    Args:
-        url: URL to analyze
-        enable_fact_check: Whether to enable fact-checking
-        enable_download: Whether to generate downloadable text file
-        include_timestamps: Whether to include timestamps (YouTube only)
-
-    Returns:
-        tuple: (markdown_result, analysis_md_path, download_file_path or None)
+    Phase 1: Fetch raw content.
+    Returns updated state and UI updates.
     """
     if not url or not url.strip():
-        return "Please enter a URL to analyze.", None, None
+        yield (
+            state,
+            gr.update(),        # content_display
+            gr.update(),        # source_file
+            gr.update(),        # results_md
+            gr.update(visible=False),  # summarize_btn
+            gr.update(visible=False),  # factcheck_btn
+            gr.update(visible=False),  # fetch_status
+            "Please enter a URL.",     # status_msg
+        )
+        return
+
+    url = url.strip()
+
+    yield (
+        state,
+        gr.update(value="*Fetching content...*", visible=True),
+        gr.update(visible=False),
+        gr.update(),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        "Fetching content from source...",
+    )
 
     try:
-        # Run the analysis
-        result = run_fact_checker(url.strip(), enable_fact_check)
-
-        # Generate downloadable Markdown file for analysis result
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        temp_dir = tempfile.gettempdir()
-
-        if is_youtube_url(url.strip()):
-            try:
-                video_id = _extract_video_id(url.strip())
-                md_filename = f"analysis_{video_id}_{timestamp}.md"
-            except Exception:
-                md_filename = f"analysis_{timestamp}.md"
-        else:
-            md_filename = f"analysis_{timestamp}.md"
-
-        analysis_md_path = os.path.join(temp_dir, md_filename)
-        with open(analysis_md_path, 'w', encoding='utf-8') as f:
-            f.write(f"# Fact-Checker Analysis Report\n\n**Source URL:** {url.strip()}\n\n" + result)
-
-        # Generate source text download file if requested
-        download_file = None
-        if enable_download:
-            try:
-                is_youtube = is_youtube_url(url.strip())
-
-                if is_youtube:
-                    video_id = _extract_video_id(url.strip())
-                    transcript_text = _get_video_transcript(video_id, include_timestamps=include_timestamps)
-                    filename = f"transcript_{video_id}.txt"
-                else:
-                    transcript_text = fetch_web_page(url.strip())
-                    filename = f"webpage_{timestamp}.txt"
-
-                file_path = os.path.join(temp_dir, filename)
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(transcript_text)
-
-                download_file = file_path
-            except Exception as e:
-                result += f"\n\n> [!NOTE]\n> Could not generate source text download file: {str(e)}"
-
-        return result, analysis_md_path, download_file
-
+        source_text, metadata = fetch_content(url)
     except Exception as e:
-        err_msg = f"**Error processing URL:** {str(e)}\n\nPlease check that:\n1. The URL is valid\n2. Environment variables are set (OPENROUTER_API_KEY, SERPER_API_KEY)"
-        return err_msg, None, None
+        yield (
+            state,
+            gr.update(value=f"**Error fetching content:** {e}", visible=True),
+            gr.update(visible=False),
+            gr.update(value=""),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            f"Error: {e}",
+        )
+        return
+
+    # Save source text to temp file for download
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    temp_dir = tempfile.gettempdir()
+    ext = "txt"
+    fname = f"source_{timestamp}.{ext}"
+    fpath = os.path.join(temp_dir, fname)
+    with open(fpath, "w", encoding="utf-8") as f:
+        f.write(source_text)
+
+    # Update state
+    new_state = dict(state)
+    new_state["url"] = url
+    new_state["source_text"] = source_text
+    new_state["results"] = ""
+
+    preview = source_text[:2000] + ("\n\n*[truncated — download for full text]*" if len(source_text) > 2000 else "")
+
+    content_md = f"### Fetched Content\n\n{metadata}\n\n<details>\n<summary>Preview source text</summary>\n\n```\n{preview}\n```\n</details>"
+
+    yield (
+        new_state,
+        gr.update(value=content_md, visible=True),
+        gr.update(value=fpath, visible=True),
+        gr.update(value=""),
+        gr.update(visible=True, value="Summarize →"),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        "Content fetched. Click **Summarize** to continue.",
+    )
 
 
-# Create Gradio interface
-with gr.Blocks(title="Fact-Checker") as demo:
-    gr.Markdown("""
-    # Fact-Checker Agent
+def phase_summarize(state: dict):
+    """Phase 2: Summarize content."""
+    url = state.get("url", "")
+    source_text = state.get("source_text", "")
 
-    Summarize web content and optionally fact-check claims.
+    if not source_text:
+        yield (
+            state,
+            gr.update(),
+            gr.update(),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            "No content to summarize. Please fetch a URL first.",
+        )
+        return
 
-    **Supported sources:**
-    - YouTube videos (extracts transcripts)
-    - Web articles (Substack, blogs, news sites)
-    - Any web page with readable content
-    """)
+    yield (
+        state,
+        gr.update(value="*Summarizing content — this may take a moment...*"),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        "Summarizing...",
+    )
+
+    try:
+        summary = summarize_content(url, source_text)
+    except Exception as e:
+        yield (
+            state,
+            gr.update(value=f"**Error during summarization:** {e}"),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            f"Error: {e}",
+        )
+        return
+
+    new_state = dict(state)
+    new_state["results"] = summary
+    new_state["summary"] = summary
+
+    # Save analysis file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    temp_dir = tempfile.gettempdir()
+    fpath = os.path.join(temp_dir, f"analysis_{timestamp}.md")
+    with open(fpath, "w", encoding="utf-8") as f:
+        f.write(f"# Fact-Checker Analysis\n\n**Source:** {url}\n\n{summary}")
+
+    next_step_note = "\n\n---\n*Next step: **Fact-check** — verify key claims against external sources (takes longer).*"
+
+    yield (
+        new_state,
+        gr.update(value=summary + next_step_note),
+        gr.update(value=fpath, visible=True),
+        gr.update(visible=True, value="Fact-check →"),
+        gr.update(visible=True, value="Summarize →"),
+        "Summary ready. Click **Fact-check** to verify claims, or you're done.",
+    )
+
+
+def phase_factcheck(state: dict):
+    """Phase 3: Fact-check claims."""
+    url = state.get("url", "")
+    source_text = state.get("source_text", "")
+    summary = state.get("summary", "")
+
+    if not source_text:
+        yield (
+            state,
+            gr.update(),
+            gr.update(),
+            gr.update(visible=False),
+            gr.update(visible=True),
+            "No content to fact-check. Please fetch a URL first.",
+        )
+        return
+
+    yield (
+        state,
+        gr.update(value=(summary or "") + "\n\n---\n*Fact-checking claims — searching for evidence...*"),
+        gr.update(),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        "Fact-checking in progress...",
+    )
+
+    try:
+        fc_result = fact_check_content(url, source_text)
+    except Exception as e:
+        yield (
+            state,
+            gr.update(value=(summary or "") + f"\n\n**Error during fact-check:** {e}"),
+            gr.update(),
+            gr.update(visible=False),
+            gr.update(visible=True),
+            f"Error: {e}",
+        )
+        return
+
+    new_state = dict(state)
+    combined = (summary or "") + "\n\n---\n\n" + fc_result
+    new_state["results"] = combined
+
+    # Update analysis file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    temp_dir = tempfile.gettempdir()
+    fpath = os.path.join(temp_dir, f"analysis_{timestamp}.md")
+    with open(fpath, "w", encoding="utf-8") as f:
+        f.write(f"# Fact-Checker Analysis\n\n**Source:** {url}\n\n{combined}")
+
+    yield (
+        new_state,
+        gr.update(value=combined),
+        gr.update(value=fpath, visible=True),
+        gr.update(visible=False),
+        gr.update(visible=True),
+        "Fact-check complete.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Build UI
+# ---------------------------------------------------------------------------
+
+with gr.Blocks(title="Fact-Checker", css=".status-bar { font-style: italic; color: #666; }") as demo:
+    gr.Markdown("# Fact-Checker Agent\nSummarize web content and fact-check claims — step by step.")
+
+    state = gr.State({})
 
     with gr.Row():
+        # Left column: inputs
         with gr.Column(scale=1):
             url_input = gr.Textbox(
                 label="URL",
-                placeholder="Enter YouTube URL or web article URL...",
+                placeholder="YouTube URL or web article URL...",
                 lines=2
             )
+            fetch_btn = gr.Button("Fetch content", variant="primary")
+            status_msg = gr.Markdown("*Enter a URL and click Fetch content to begin.*")
 
-            fact_check_checkbox = gr.Checkbox(
-                label="Enable fact-checking",
-                value=False,
-                info="Extract and verify key claims (takes longer)"
-            )
-
-            download_checkbox = gr.Checkbox(
-                label="Download analyzed text",
-                value=False,
-                info="Download the full source text as a .txt file"
-            )
-
-            timestamp_checkbox = gr.Checkbox(
-                label="Include timestamps (YouTube only)",
-                value=True,
-                visible=False,
-                info="Format: [mm:ss], text"
-            )
-
-            submit_btn = gr.Button("Analyze", variant="primary")
-
+        # Right column: results
         with gr.Column(scale=2):
-            gr.Markdown("### Analysis Result")
-            output = gr.Markdown(
-                value="*Results will appear here after clicking Analyze.*"
-            )
+            # Phase 1 output: fetched content preview + source download
+            content_display = gr.Markdown(visible=False)
+            source_file = gr.File(label="Download source text", visible=False)
+
+            # Phase 2/3 output: summary + fact-check
+            results_md = gr.Markdown()
+            analysis_file = gr.File(label="Download analysis (.md)", visible=False)
 
             with gr.Row():
-                download_analysis_file = gr.File(
-                    label="Download Analysis Result (.md)",
-                    visible=True
-                )
+                summarize_btn = gr.Button("Summarize →", variant="primary", visible=False)
+                factcheck_btn = gr.Button("Fact-check →", variant="secondary", visible=False)
 
-                download_file = gr.File(
-                    label="Download Source Text (.txt)",
-                    visible=True
-                )
-
-    # Examples
     gr.Markdown("### Examples")
     gr.Examples(
         examples=[
-            ["https://www.youtube.com/watch?v=dQw4w9WgXcQ", False],
-            ["https://en.wikipedia.org/wiki/Artificial_intelligence", False],
-            ["https://en.wikipedia.org/wiki/Artificial_intelligence", True],
+            ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
+            ["https://en.wikipedia.org/wiki/Artificial_intelligence"],
         ],
-        inputs=[url_input, fact_check_checkbox],
-        label="Try these examples"
+        inputs=[url_input],
+        label="Try these"
     )
 
-    # Dynamic UI: Show timestamp checkbox when download is enabled and URL is YouTube
-    def update_timestamp_visibility(url, download_enabled):
-        """Show timestamp checkbox only for YouTube URLs when download is enabled."""
-        if download_enabled and url and is_youtube_url(url):
-            return gr.update(visible=True)
-        return gr.update(visible=False)
+    # ---------------------------------------------------------------------------
+    # Event wiring
+    # ---------------------------------------------------------------------------
 
-    # Update timestamp checkbox visibility when URL or download checkbox changes
-    url_input.change(
-        fn=update_timestamp_visibility,
-        inputs=[url_input, download_checkbox],
-        outputs=timestamp_checkbox
+    fetch_outputs = [
+        state,
+        content_display,
+        source_file,
+        results_md,
+        summarize_btn,
+        factcheck_btn,
+        analysis_file,
+        status_msg,
+    ]
+
+    fetch_btn.click(
+        fn=phase_fetch,
+        inputs=[url_input, state],
+        outputs=fetch_outputs,
     )
-
-    download_checkbox.change(
-        fn=update_timestamp_visibility,
-        inputs=[url_input, download_checkbox],
-        outputs=timestamp_checkbox
-    )
-
-    # Event handler
-    submit_btn.click(
-        fn=process_url,
-        inputs=[url_input, fact_check_checkbox, download_checkbox, timestamp_checkbox],
-        outputs=[output, download_analysis_file, download_file]
-    )
-
-    # Also trigger on Enter key
     url_input.submit(
-        fn=process_url,
-        inputs=[url_input, fact_check_checkbox, download_checkbox, timestamp_checkbox],
-        outputs=[output, download_analysis_file, download_file]
+        fn=phase_fetch,
+        inputs=[url_input, state],
+        outputs=fetch_outputs,
     )
+
+    summarize_outputs = [
+        state,
+        results_md,
+        analysis_file,
+        factcheck_btn,
+        summarize_btn,
+        status_msg,
+    ]
+
+    summarize_btn.click(
+        fn=phase_summarize,
+        inputs=[state],
+        outputs=summarize_outputs,
+    )
+
+    factcheck_outputs = [
+        state,
+        results_md,
+        analysis_file,
+        factcheck_btn,
+        summarize_btn,
+        status_msg,
+    ]
+
+    factcheck_btn.click(
+        fn=phase_factcheck,
+        inputs=[state],
+        outputs=factcheck_outputs,
+    )
+
 
 if __name__ == "__main__":
     demo.launch()

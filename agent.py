@@ -1,35 +1,121 @@
 """
 Fact-Checker Agent
-Single CodeAgent with tools for summarization and fact-checking
+Three discrete phases: fetch, summarize, fact-check
 """
 
 from smolagents import CodeAgent, PythonInterpreterTool, FinalAnswerTool, WikipediaSearchTool
 from config import get_model
-from tools import analyze_youtube_video, fetch_web_page, better_web_search
+from tools import analyze_youtube_video, fetch_web_page, better_web_search, _extract_video_id, _get_video_transcript
+import re
 
 
-def create_fact_checker_agent():
+def is_youtube_url(url: str) -> bool:
+    return bool(re.search(r'(youtube\.com|youtu\.be)', url))
+
+
+def fetch_content(url: str) -> tuple[str, str]:
     """
-    Create and configure the fact-checker agent.
+    Phase 1: Fetch raw content from URL.
 
     Returns:
-        CodeAgent: Configured agent ready to use
+        tuple: (source_text, metadata_summary)
+            source_text: full raw text for download
+            metadata_summary: short description (title, source type, length)
     """
-    # Get model from config
+    url = url.strip()
+    if is_youtube_url(url):
+        video_id = _extract_video_id(url)
+        source_text = _get_video_transcript(video_id, include_timestamps=True)
+        word_count = len(source_text.split())
+        metadata = f"**YouTube video** | ~{word_count:,} words of transcript"
+    else:
+        source_text = fetch_web_page(url)
+        word_count = len(source_text.split())
+        metadata = f"**Web page** | ~{word_count:,} words extracted"
+
+    return source_text, metadata
+
+
+def summarize_content(url: str, source_text: str) -> str:
+    """
+    Phase 2: Summarize the already-fetched content.
+
+    Args:
+        url: original URL (for context)
+        source_text: already-fetched text
+
+    Returns:
+        str: Markdown summary
+    """
+    agent = _create_agent()
+
+    prompt = f"""Summarize this content. The text has already been retrieved — do NOT use any fetch tools.
+
+Source URL: {url}
+
+Content:
+{source_text[:12000]}
+
+Create a concise summary covering:
+- Main topic/thesis
+- Key arguments or information
+- Important conclusions or takeaways
+
+Format your response as:
+## Summary
+[3-5 bullet points of key information]
+"""
+    return agent.run(prompt)
+
+
+def fact_check_content(url: str, source_text: str) -> str:
+    """
+    Phase 3: Fact-check claims in the already-fetched content.
+
+    Args:
+        url: original URL (for context)
+        source_text: already-fetched text
+
+    Returns:
+        str: Markdown fact-check results
+    """
+    agent = _create_agent()
+
+    prompt = f"""Fact-check the key claims in this content. The text has already been retrieved — do NOT use any fetch tools.
+
+Source URL: {url}
+
+Content:
+{source_text[:12000]}
+
+Tasks:
+1. Identify 3-5 specific verifiable factual claims from the content
+2. For each claim, use better_web_search and/or WikipediaSearchTool to find evidence
+3. Determine verdict: Supported, Contradicted, Mixed, or Unverified
+
+Format your response as:
+## Fact-Check Results
+
+For each claim:
+### Claim: [The factual statement]
+**Verdict:** [Supported/Contradicted/Mixed/Unverified]
+**Evidence:** [Brief summary of what you found]
+**Sources:** [URLs or source names]
+"""
+    return agent.run(prompt)
+
+
+def _create_agent() -> CodeAgent:
     model = get_model()
-
-    # Define tools
     tools = [
-        PythonInterpreterTool(),  # For data processing and analysis
-        analyze_youtube_video,     # YouTube transcript extraction
-        fetch_web_page,            # Web article extraction
-        better_web_search,         # Web search for fact-checking
-        WikipediaSearchTool(),     # Wikipedia search for fact-checking
-        FinalAnswerTool(),         # Final answer formatting
+        PythonInterpreterTool(),
+        analyze_youtube_video,
+        fetch_web_page,
+        better_web_search,
+        WikipediaSearchTool(),
+        FinalAnswerTool(),
     ]
-
-    # Create agent
-    agent = CodeAgent(
+    return CodeAgent(
         tools=tools,
         model=model,
         max_steps=15,
@@ -37,72 +123,12 @@ def create_fact_checker_agent():
         verbosity_level=1
     )
 
-    return agent
-
 
 def run_fact_checker(url: str, enable_fact_check: bool = False):
-    """
-    Run fact-checker agent on a given URL.
-
-    Args:
-        url: URL to analyze (YouTube video or web page)
-        enable_fact_check: Whether to perform fact-checking (default: False)
-
-    Returns:
-        str: Agent's response
-    """
-    agent = create_fact_checker_agent()
-
-    # Build prompt based on fact-check flag
+    """Legacy single-call entry point (kept for compatibility)."""
+    source_text, _ = fetch_content(url)
+    result = summarize_content(url, source_text)
     if enable_fact_check:
-        prompt = f"""Analyze this content and provide both a summary and fact-checking:
-
-URL: {url}
-
-Tasks:
-1. Retrieve and read the content from the URL
-   - If YouTube: Use analyze_youtube_video tool
-   - Otherwise: Use fetch_web_page tool
-
-2. Create a concise summary (3-5 key points)
-
-3. Fact-check the content:
-   - Identify 3-5 verifiable factual claims
-   - For each claim, search for supporting or contradicting evidence using better_web_search
-   - Determine verdict: Supported, Contradicted, Mixed, or Unverified
-   - List sources used for verification
-
-Format your response as:
-## Summary
-[3-5 bullet points of key information]
-
-## Fact-Check Results
-[For each claim, provide:]
-- Claim: [The factual statement]
-- Verdict: [Supported/Contradicted/Mixed/Unverified]
-- Evidence: [Brief summary with source links]
-"""
-    else:
-        prompt = f"""Analyze this content and provide a summary:
-
-URL: {url}
-
-Tasks:
-1. Retrieve and read the content from the URL
-   - If YouTube: Use analyze_youtube_video tool
-   - Otherwise: Use fetch_web_page tool
-
-2. Create a concise summary (3-5 key points) covering:
-   - Main topic/thesis
-   - Key arguments or information
-   - Important conclusions or takeaways
-
-Format your response as:
-## Summary
-[3-5 bullet points of key information]
-"""
-
-    # Run agent
-    result = agent.run(prompt)
-
+        fc_result = fact_check_content(url, source_text)
+        result = result + "\n\n" + fc_result
     return result
