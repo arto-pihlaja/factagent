@@ -28,48 +28,59 @@ def process_url(url: str, enable_fact_check: bool, enable_download: bool, includ
         include_timestamps: Whether to include timestamps (YouTube only)
 
     Returns:
-        tuple: (analysis_result, download_file_path or None)
+        tuple: (markdown_result, analysis_md_path, download_file_path or None)
     """
     if not url or not url.strip():
-        return "Please enter a URL to analyze.", None
+        return "Please enter a URL to analyze.", None, None
 
     try:
         # Run the analysis
         result = run_fact_checker(url.strip(), enable_fact_check)
 
-        # Generate download file if requested
+        # Generate downloadable Markdown file for analysis result
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        temp_dir = tempfile.gettempdir()
+
+        if is_youtube_url(url.strip()):
+            try:
+                video_id = _extract_video_id(url.strip())
+                md_filename = f"analysis_{video_id}_{timestamp}.md"
+            except Exception:
+                md_filename = f"analysis_{timestamp}.md"
+        else:
+            md_filename = f"analysis_{timestamp}.md"
+
+        analysis_md_path = os.path.join(temp_dir, md_filename)
+        with open(analysis_md_path, 'w', encoding='utf-8') as f:
+            f.write(f"# Fact-Checker Analysis Report\n\n**Source URL:** {url.strip()}\n\n" + result)
+
+        # Generate source text download file if requested
         download_file = None
         if enable_download:
             try:
                 is_youtube = is_youtube_url(url.strip())
 
                 if is_youtube:
-                    # Extract YouTube transcript
                     video_id = _extract_video_id(url.strip())
                     transcript_text = _get_video_transcript(video_id, include_timestamps=include_timestamps)
                     filename = f"transcript_{video_id}.txt"
                 else:
-                    # Fetch web page content
                     transcript_text = fetch_web_page(url.strip())
-                    # Create filename from timestamp
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     filename = f"webpage_{timestamp}.txt"
 
-                # Save to temporary file
-                temp_dir = tempfile.gettempdir()
                 file_path = os.path.join(temp_dir, filename)
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(transcript_text)
 
                 download_file = file_path
             except Exception as e:
-                # Don't fail the whole process if download fails
-                result += f"\n\n[Note: Could not generate download file: {str(e)}]"
+                result += f"\n\n> [!NOTE]\n> Could not generate source text download file: {str(e)}"
 
-        return result, download_file
+        return result, analysis_md_path, download_file
 
     except Exception as e:
-        return f"Error processing URL: {str(e)}\n\nPlease check that:\n1. The URL is valid\n2. Environment variables are set (OPENROUTER_API_KEY, SERPER_API_KEY)", None
+        err_msg = f"**Error processing URL:** {str(e)}\n\nPlease check that:\n1. The URL is valid\n2. Environment variables are set (OPENROUTER_API_KEY, SERPER_API_KEY)"
+        return err_msg, None, None
 
 
 # Create Gradio interface
@@ -86,7 +97,7 @@ with gr.Blocks(title="Fact-Checker") as demo:
     """)
 
     with gr.Row():
-        with gr.Column():
+        with gr.Column(scale=1):
             url_input = gr.Textbox(
                 label="URL",
                 placeholder="Enter YouTube URL or web article URL...",
@@ -114,17 +125,34 @@ with gr.Blocks(title="Fact-Checker") as demo:
 
             submit_btn = gr.Button("Analyze", variant="primary")
 
-        with gr.Column():
-            output = gr.Textbox(
-                label="Analysis Result",
-                lines=20,
-                show_copy_button=True
+        with gr.Column(scale=2):
+            gr.Markdown("### Analysis Result")
+            output = gr.Markdown(
+                value="*Results will appear here after clicking Analyze.*"
             )
 
-            download_file = gr.File(
-                label="Download File",
-                visible=True
-            )
+            with gr.Row():
+                download_analysis_file = gr.File(
+                    label="Download Analysis Result (.md)",
+                    visible=True
+                )
+
+                download_file = gr.File(
+                    label="Download Source Text (.txt)",
+                    visible=True
+                )
+
+    # Examples
+    gr.Markdown("### Examples")
+    gr.Examples(
+        examples=[
+            ["https://www.youtube.com/watch?v=dQw4w9WgXcQ", False],
+            ["https://en.wikipedia.org/wiki/Artificial_intelligence", False],
+            ["https://en.wikipedia.org/wiki/Artificial_intelligence", True],
+        ],
+        inputs=[url_input, fact_check_checkbox],
+        label="Try these examples"
+    )
 
     # Dynamic UI: Show timestamp checkbox when download is enabled and URL is YouTube
     def update_timestamp_visibility(url, download_enabled):
@@ -150,14 +178,14 @@ with gr.Blocks(title="Fact-Checker") as demo:
     submit_btn.click(
         fn=process_url,
         inputs=[url_input, fact_check_checkbox, download_checkbox, timestamp_checkbox],
-        outputs=[output, download_file]
+        outputs=[output, download_analysis_file, download_file]
     )
 
     # Also trigger on Enter key
     url_input.submit(
         fn=process_url,
         inputs=[url_input, fact_check_checkbox, download_checkbox, timestamp_checkbox],
-        outputs=[output, download_file]
+        outputs=[output, download_analysis_file, download_file]
     )
 
 if __name__ == "__main__":
